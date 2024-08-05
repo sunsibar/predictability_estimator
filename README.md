@@ -2,6 +2,12 @@
 
 A tiny package to fit MLP models from 1D features to 1D features. 
 
+Installation:
+
+```bash
+pip install git+https://github.com/sunsibar/predictability_estimator.git
+```
+
     Example usage:
     --------------
         X = torch.rand(100, 10) 
@@ -9,7 +15,7 @@ A tiny package to fit MLP models from 1D features to 1D features.
         noise = torch.randn(100, 3) * 0.1
         y = X @ true_weights + noise 
         dataset = TensorDataset(X, y)
-        optimizer = HyperparameterOptimizer(dataset, self.metric, 10, 3, hyperparameter_ranges={})
+        optimizer = HyperparameterOptimizer(dataset, self.metric, 10, 3, hyperparameter_ranges={}, log_file="path/to/logfile_to_create.csv")
         best_trial = optimizer.optimize(n_trials=3)
 
         Hyperparameters to chose ranges for:

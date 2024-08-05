@@ -22,6 +22,7 @@ from collections import defaultdict
 import json
 import numpy as np
 import optuna
+from optuna.samplers import TPESampler, RandomSampler, GridSampler
 import time
 import torch
 import torch.nn as nn
@@ -126,13 +127,22 @@ class HyperparameterOptimizer:
             assert type(v) in [list, tuple], f"Hyperparameter ranges must be lists or tuples; found: {type(v)}"
             assert (len(v) == 2) or k in ['optimizer', 'regularization'], "Hyperparameter ranges must consist of two elements except for optimizer and regularization"
         self.algorithm = algorithm
+        if algorithm =="TPE":
+            sampler = TPESampler()
+        elif algorithm == "Random":
+            sampler = RandomSampler()
+        elif algorithm == "Grid":
+            sampler = GridSampler()
+        else:
+            raise ValueError("Algorithm not implemented, feel free to add it above: ", algorithm)
         self.log_file = log_file
         self.patience = patience
         self.max_epochs = max_epochs
         self.max_batch_sizes = defaultdict(lambda: int(np.floor(max((1024, len(self.dataset)*0.8)))))
         self.stop_when_overfitting = stop_when_overfitting
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.study = optuna.create_study(direction='maximize' if metric == 'variance_explained' else 'minimize')
+        self.study = optuna.create_study(direction='maximize' if metric == 'variance_explained' else 'minimize',
+                                         sampler=sampler)
         self.results = []
 
     def _range(self, key, default_range):
