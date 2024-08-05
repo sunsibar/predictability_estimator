@@ -1,0 +1,6 @@
+matplotlib
+numpy
+optuna
+pandas
+torch
+
