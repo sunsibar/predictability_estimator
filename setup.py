@@ -9,7 +9,15 @@ setup(
     name='predictability_estimator',
     version='0.1',
     packages=find_packages(),
-    install_requires=parse_requirements('requirements.txt')
+    install_requires=parse_requirements('requirements.txt'),
     # [ 'torch',  # Add other dependencies here
     # ],
+
+    url='https://github.com/sunsibar/predictability_estimator',
+    # author='Your Name',
+    # author_email='your.email@example.com',
+    description='A tiny package to fit MLP models from 1D features to 1D features.',
+    long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
 )
+
