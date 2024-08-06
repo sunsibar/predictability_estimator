@@ -122,7 +122,7 @@ class HyperparameterOptimizer:
         assert metric in ["variance_explained",  "train_loss", "eval_loss"]
         self.loss_type = loss_type
         self.hyperparameter_ranges = hyperparameter_ranges or {}
-        for k, v  in hyperparameter_ranges.items(): 
+        for k, v  in self.hyperparameter_ranges.items(): 
             assert k in ['hidden_size', 'num_layers', 'dropout', 'optimizer', 'regularization', 'weight_decay', 'lr', 'batch_size', 'sgd_momentum']
             assert type(v) in [list, tuple], f"Hyperparameter ranges must be lists or tuples; found: {type(v)}"
             assert (len(v) == 2) or k in ['optimizer', 'regularization'], "Hyperparameter ranges must consist of two elements except for optimizer and regularization"
@@ -179,17 +179,25 @@ class HyperparameterOptimizer:
         else: 
             raise ValueError("Invalid metric", self.metric)
             
+    def get_data_loaders(self, batch_size):
+        '''For convenience'''
+        # Split dataset into training and evaluation sets
+        train_size = int(0.8 * len(self.dataset))
+        eval_size = len(self.dataset) - train_size
+        train_dataset, eval_dataset = random_split(self.dataset, [train_size, eval_size])
 
-    def _objective(self, trial):
-        model = self._create_model(trial)
-        # loss_type = trial.suggest_categorical('loss', ['MSE', 'CrossEntropy'])
-        if self.loss_type == 'MSE':
-            criterion = nn.MSELoss()
-        elif self.loss_type == "CrossEntropy":
-            criterion = nn.CrossEntropyLoss()
-        else:
-            raise ValueError("Invalid loss type", self.loss_type)        
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
+        return train_loader, eval_loader
         
+    def retrain_model(self, trial):
+        score, results, model = self._objective(trial, return_model=True)
+        return score, results, model 
+
+    def _objective(self, trial, return_model=False):     
+        
+        model = self._create_model(trial)
+
         optimizer_name      = trial.suggest_categorical('optimizer', self._range("optimizer", ['Adam', 'SGD', 'RMSProp']))
         regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L1', 'L2']))
         weight_decay        = trial.suggest_float('weight_decay', *self._range("weight_decay", (1e-6, 1e-2)), log=True)
@@ -201,6 +209,19 @@ class HyperparameterOptimizer:
             weight_decay_ = 0
         else:
             weight_decay_ = weight_decay
+
+        bs_range = self._range("batch_size", (16, self.max_batch_sizes[_model_size(trial)]))
+        batch_size = trial.suggest_int('batch_size', *bs_range, log=True)
+
+
+        # loss_type = trial.suggest_categorical('loss', ['MSE', 'CrossEntropy'])
+        if self.loss_type == 'MSE':
+            criterion = nn.MSELoss()
+        elif self.loss_type == "CrossEntropy":
+            criterion = nn.CrossEntropyLoss()
+        else:
+            raise ValueError("Invalid loss type", self.loss_type)   
+
         if optimizer_name == 'Adam':
             optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay_,)
         elif optimizer_name == 'SGD':
@@ -211,13 +232,13 @@ class HyperparameterOptimizer:
         del weight_decay_
         
         # Split dataset into training and evaluation sets
-        train_size = int(0.8 * len(self.dataset))
-        eval_size = len(self.dataset) - train_size
-        train_dataset, eval_dataset = random_split(self.dataset, [train_size, eval_size])
+        # train_size = int(0.8 * len(self.dataset))
+        # eval_size = len(self.dataset) - train_size
+        # train_dataset, eval_dataset = random_split(self.dataset, [train_size, eval_size])
 
-        bs_range = self._range("batch_size", (16, self.max_batch_sizes[_model_size(trial)]))
-        train_loader = DataLoader(train_dataset, batch_size=trial.suggest_int('batch_size', *bs_range), shuffle=True)
-        eval_loader = DataLoader(eval_dataset, batch_size=trial.params['batch_size'], shuffle=False)
+        # train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        # eval_loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
+        train_loader, eval_loader = self.get_data_loaders(batch_size)
         
         
         epochs = self.max_epochs
@@ -331,21 +352,32 @@ class HyperparameterOptimizer:
             'epochs_loss_curves': json.dumps(loss_cuve_slice.tolist()),
             'hyperparameters': trial.params,
             'converged': patience_counter >= patience,
+            'train_loss': train_loss,
+            'eval_loss': eval_loss, 
             'best_train_loss': best_loss_train,
             'best_eval_loss': best_loss_eval, 
             **{'overfitting_'+k: v for k, v in overfitting_metrics_.items() }
         })
         if self.metric == "variance_explained":
-            return self._metric(y_true, y_pred)
+            score = self._metric(y_true, y_pred)
         elif self.metric == "train_loss":
-            return best_loss_train
+            score = best_loss_train
         elif self.metric == "eval_loss":
-            return best_loss_eval
+            score = best_loss_eval
         else:
             raise ValueError("Invalid metric", self.metric)
 
+        if return_model:
+            return score, self.results[-1], model
+        return score
 
-    def optimize(self, n_trials=100, verbose=True):
+
+    def optimize(self, n_trials=100, verbose=True, hyperparameters=None):
+        if hyperparameters:
+            # Update hyperparameter ranges
+            for k, v in hyperparameters.items():
+                self.hyperparameter_ranges[k] = v
+
         self.study.optimize(self._objective, n_trials=n_trials)
         best_trial = self.study.best_trial
         
