@@ -20,6 +20,7 @@ hyperparameters. These are a lot of specifications, so please re-read it before 
 '''
 from collections import defaultdict
 import json
+import os 
 import numpy as np
 import optuna
 from optuna.samplers import TPESampler, RandomSampler, GridSampler
@@ -111,8 +112,9 @@ class HyperparameterOptimizer:
 
     '''
     def __init__(self, dataset, metric, in_features, out_features, hyperparameter_ranges=None, 
-                 algorithm='TPE', log_file='results.csv', 
-                 loss_type='MSE', patience=10, max_epochs=100, stop_when_overfitting=False):
+                 algorithm='TPE', log_file='results.csv', log_file_optuna=None, study_name=None,
+                 loss_type='MSE', patience=10, max_epochs=100, stop_when_overfitting=False,
+                 load_if_exists=False):
         self.in_features = in_features
         self.out_features = out_features 
         self.dataset = dataset
@@ -136,13 +138,27 @@ class HyperparameterOptimizer:
         else:
             raise ValueError("Algorithm not implemented, feel free to add it above: ", algorithm)
         self.log_file = log_file
+        self.log_file_optuna = log_file_optuna
+        if log_file_optuna is not None:
+            if not os.path.exists(log_file_optuna):
+                with open(log_file_optuna, 'w') as f:
+                    f.write('')
+            storage = optuna.storages.JournalStorage(
+                optuna.storages.JournalFileStorage(log_file_optuna),
+            )
+        else:
+            storage = None
+ 
         self.patience = patience
         self.max_epochs = max_epochs
         self.max_batch_sizes = defaultdict(lambda: int(np.floor(max((1024, len(self.dataset)*0.8)))))
         self.stop_when_overfitting = stop_when_overfitting
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.study = optuna.create_study(direction='maximize' if metric == 'variance_explained' else 'minimize',
-                                         sampler=sampler)
+                                         sampler=sampler,
+                                         storage=storage,
+                                         study_name=study_name,
+                                         load_if_exists=load_if_exists) 
         self.results = []
 
     def _range(self, key, default_range):
@@ -156,6 +172,9 @@ class HyperparameterOptimizer:
         dropout = trial.suggest_float('dropout', *self._range("dropout", (0.0, 0.5)))
         
         layers = []
+        if num_layers == 1:
+            layers.append(nn.Linear(self.in_features, self.out_features))
+            return nn.Sequential(*layers)
         layers.append(nn.Linear(self.in_features, hidden_size))
         layers.append(nn.ReLU())
         layers.append(nn.Dropout(dropout))
@@ -191,10 +210,10 @@ class HyperparameterOptimizer:
         return train_loader, eval_loader
         
     def retrain_model(self, trial):
-        score, results, model = self._objective(trial, return_model=True)
+        score, results, model = self._objective(trial, return_model=True, lr_decay=True)
         return score, results, model 
 
-    def _objective(self, trial, return_model=False):     
+    def _objective(self, trial, return_model=False, lr_decay=False):     
         
         model = self._create_model(trial)
 
@@ -246,6 +265,10 @@ class HyperparameterOptimizer:
         best_loss_eval = float('inf')
         patience = self.patience
         patience_counter = 0
+        if lr_decay:
+            lr_decay_counter = 0
+        else:
+            lr_decay_counter = None
         counter_no_decrease_eval_loss = 0 
         diverged = False
         oom = False
@@ -307,7 +330,12 @@ class HyperparameterOptimizer:
                     patience_counter += 1
                 
                 if patience_counter >= patience:
-                    break
+                    if lr_decay:
+                        if lr_decay_counter >= 3:
+                            break
+                        lr_decay_counter += 1 
+                        patience_counter = 0
+                        optimizer.param_groups[0]['lr'] /= 5  
                 
                 if np.isnan(train_loss):
                     diverged = True 
@@ -352,6 +380,8 @@ class HyperparameterOptimizer:
             'epochs_loss_curves': json.dumps(loss_cuve_slice.tolist()),
             'hyperparameters': trial.params,
             'converged': patience_counter >= patience,
+            'lr_steps_down': lr_decay_counter,
+            'lr_decay': lr_decay,
             'train_loss': train_loss,
             'eval_loss': eval_loss, 
             'best_train_loss': best_loss_train,
@@ -425,5 +455,7 @@ class HyperparameterOptimizer:
 
 
         
-        return best_trial
+        return best_trial 
+
+        
 
