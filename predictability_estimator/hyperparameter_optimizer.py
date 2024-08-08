@@ -138,11 +138,12 @@ class HyperparameterOptimizer:
         else:
             raise ValueError("Algorithm not implemented, feel free to add it above: ", algorithm)
         self.log_file = log_file
+        log_dir = os.path.dirname(log_file)
+        os.makedirs(log_dir, exist_ok=True)
         self.log_file_optuna = log_file_optuna
         if log_file_optuna is not None:
-            if not os.path.exists(log_file_optuna):
-                with open(log_file_optuna, 'w') as f:
-                    f.write('')
+            log_dir_optuna = os.path.dirname(log_file_optuna)
+            os.makedirs(log_dir_optuna, exist_ok=True)
             storage = optuna.storages.JournalStorage(
                 optuna.storages.JournalFileStorage(log_file_optuna),
             )
@@ -169,7 +170,8 @@ class HyperparameterOptimizer:
   
         hidden_size = trial.suggest_int('hidden_size', *self._range("hidden_size", (32, 512))) 
         num_layers = trial.suggest_int('num_layers', *self._range("num_layers", (1, 5)))
-        dropout = trial.suggest_float('dropout', *self._range("dropout", (0.0, 0.5)))
+        if num_layers > 1:
+            dropout = trial.suggest_float('dropout', *self._range("dropout", (0.0, 0.5)))
         
         layers = []
         if num_layers == 1:
@@ -198,7 +200,7 @@ class HyperparameterOptimizer:
         else: 
             raise ValueError("Invalid metric", self.metric)
             
-    def get_data_loaders(self, batch_size):
+    def get_data_loaders(self, batch_size=512):
         '''For convenience'''
         # Split dataset into training and evaluation sets
         train_size = int(0.8 * len(self.dataset))
@@ -215,7 +217,7 @@ class HyperparameterOptimizer:
 
     def _objective(self, trial, return_model=False, lr_decay=False):     
         
-        model = self._create_model(trial)
+        model = self._create_model(trial).to(self.device)
 
         optimizer_name      = trial.suggest_categorical('optimizer', self._range("optimizer", ['Adam', 'SGD', 'RMSProp']))
         regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L1', 'L2']))
@@ -282,17 +284,18 @@ class HyperparameterOptimizer:
                 model.train()
                 running_loss = 0.0
                 for X_batch, y_batch in train_loader:
+                    X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
                     optimizer.zero_grad()
                     outputs = model(X_batch)
                     loss = criterion(outputs, y_batch)
                     if regularization_type == 'L1':
-                        l1_regularization = torch.tensor(0.0)
+                        l1_regularization = torch.tensor(0.0, device=self.device)
                         for param in model.parameters():
                             l1_regularization += torch.norm(param, 1)
                         loss += weight_decay * l1_regularization
                     loss.backward()
                     optimizer.step()
-                    running_loss += loss.item()
+                    running_loss += loss.detach().to("cpu").item()
                 
                 train_loss = running_loss / len(train_loader)
                 train_loss_curve[epoch] = (train_loss)
@@ -304,17 +307,18 @@ class HyperparameterOptimizer:
                 y_pred = []
                 with torch.no_grad():
                     for X_batch, y_batch in eval_loader:
+                        X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
                         outputs = model(X_batch)
                         loss = criterion(outputs, y_batch)
-                        eval_loss += loss.item()
+                        eval_loss += loss.to("cpu").item()
                         if self.metric == 'variance_explained':
                             y_true.append(y_batch)
                             y_pred.append(outputs)
                 eval_loss /= len(eval_loader)
                 eval_loss_curve[epoch] = eval_loss
                 if self.metric == "variance_explained":
-                    y_true = torch.cat(y_true, dim=0)
-                    y_pred = torch.cat(y_pred, dim=0)
+                    y_true = torch.cat(y_true, dim=0).to("cpu").numpy()
+                    y_pred = torch.cat(y_pred, dim=0).to("cpu").numpy()
                     metric_curve[epoch] = self._metric(y_true, y_pred)
 
                 if eval_loss < best_loss_eval:
@@ -413,6 +417,10 @@ class HyperparameterOptimizer:
         
         # Save results to CSV
         df = pd.DataFrame(self.results)
+        if os.path.exists(self.log_file):
+            df = pd.concat([pd.read_csv(self.log_file), df], ignore_index=True
+            )
+            print("Reloaded previous study results from csv file")
         df.to_csv(self.log_file, index=False)
 
         if verbose:
