@@ -83,6 +83,8 @@ def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False)
     return result
 
 def _model_size(trial):
+    if trial.params['num_layers'] == 1:
+        return (1, -1)
     return (trial.params['num_layers'], trial.params['hidden_size'])
 
 
@@ -168,9 +170,9 @@ class HyperparameterOptimizer:
     
     def _create_model(self, trial):
   
-        hidden_size = trial.suggest_int('hidden_size', *self._range("hidden_size", (32, 512))) 
         num_layers = trial.suggest_int('num_layers', *self._range("num_layers", (1, 5)))
         if num_layers > 1:
+            hidden_size = trial.suggest_int('hidden_size', *self._range("hidden_size", (32, 512))) 
             dropout = trial.suggest_float('dropout', *self._range("dropout", (0.0, 0.5)))
         
         layers = []
@@ -219,8 +221,10 @@ class HyperparameterOptimizer:
         
         model = self._create_model(trial).to(self.device)
 
+        # default_weight_decay = ((1e-6, 1e-2) if trial.params["num_layers"] > 1 else (0.0, 0.0))
+        # default_regularizers = ['L2'] if trial.params["num_layers"] == 1 else ['L1', 'L2']
         optimizer_name      = trial.suggest_categorical('optimizer', self._range("optimizer", ['Adam', 'SGD', 'RMSProp']))
-        regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L1', 'L2']))
+        regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L2', 'L1']))
         weight_decay        = trial.suggest_float('weight_decay', *self._range("weight_decay", (1e-6, 1e-2)), log=True)
         lr                  = trial.suggest_float('lr', *self._range("lr", (1e-5, 1e-1)), log=True)
 
@@ -317,8 +321,8 @@ class HyperparameterOptimizer:
                 eval_loss /= len(eval_loader)
                 eval_loss_curve[epoch] = eval_loss
                 if self.metric == "variance_explained":
-                    y_true = torch.cat(y_true, dim=0).to("cpu").numpy()
-                    y_pred = torch.cat(y_pred, dim=0).to("cpu").numpy()
+                    y_true = torch.cat(y_true, dim=0) 
+                    y_pred = torch.cat(y_pred, dim=0)
                     metric_curve[epoch] = self._metric(y_true, y_pred)
 
                 if eval_loss < best_loss_eval:
@@ -340,7 +344,9 @@ class HyperparameterOptimizer:
                         lr_decay_counter += 1 
                         patience_counter = 0
                         optimizer.param_groups[0]['lr'] /= 5  
-                
+                    else:
+                        break 
+
                 if np.isnan(train_loss):
                     diverged = True 
                     break
@@ -378,9 +384,9 @@ class HyperparameterOptimizer:
             'epoch': epoch,
             'max_epochs': self.max_epochs,
             'metric': self.metric,
-            'train_loss_curve': json.dumps(train_loss_curve[loss_cuve_slice].numpy().tolist()),
-            'eval_loss_curve': json.dumps(eval_loss_curve[loss_cuve_slice].numpy().tolist()),
-            'metric_curve': json.dumps(metric_curve[loss_cuve_slice].numpy().tolist()),
+            'train_loss_curve': json.dumps(train_loss_curve[loss_cuve_slice].to("cpu").numpy().tolist()),
+            'eval_loss_curve': json.dumps(eval_loss_curve[loss_cuve_slice].to("cpu").numpy().tolist()),
+            'metric_curve': json.dumps(metric_curve[loss_cuve_slice].to("cpu").numpy().tolist()),
             'epochs_loss_curves': json.dumps(loss_cuve_slice.tolist()),
             'hyperparameters': trial.params,
             'converged': patience_counter >= patience,
