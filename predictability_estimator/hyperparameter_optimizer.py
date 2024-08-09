@@ -87,7 +87,7 @@ def _model_size(trial):
         return (1, -1)
     return (trial.params['num_layers'], trial.params['hidden_size'])
 
-def count_nonzero_params(model:torch.Module):
+def count_nonzero_params(model:torch.nn.Module):
     '''Return L0-norm of parameters'''
     return sum([torch.count_nonzero(param) for param in model.parameters()])
 
