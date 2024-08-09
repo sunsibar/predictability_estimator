@@ -87,6 +87,10 @@ def _model_size(trial):
         return (1, -1)
     return (trial.params['num_layers'], trial.params['hidden_size'])
 
+def count_nonzero_params(model:torch.Module):
+    '''Return L0-norm of parameters'''
+    return sum([torch.count_nonzero(param) for param in model.parameters()])
+
 
 class HyperparameterOptimizer:
     '''
@@ -116,7 +120,7 @@ class HyperparameterOptimizer:
     def __init__(self, dataset, metric, in_features, out_features, hyperparameter_ranges=None, 
                  algorithm='TPE', log_file='results.csv', log_file_optuna=None, study_name=None,
                  loss_type='MSE', patience=10, max_epochs=100, stop_when_overfitting=False,
-                 load_if_exists=False):
+                 load_if_exists=False, device=None):
         self.in_features = in_features
         self.out_features = out_features 
         self.dataset = dataset
@@ -156,7 +160,9 @@ class HyperparameterOptimizer:
         self.max_epochs = max_epochs
         self.max_batch_sizes = defaultdict(lambda: int(np.floor(max((1024, len(self.dataset)*0.8)))))
         self.stop_when_overfitting = stop_when_overfitting
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
         self.study = optuna.create_study(direction='maximize' if metric == 'variance_explained' else 'minimize',
                                          sampler=sampler,
                                          storage=storage,
@@ -396,6 +402,7 @@ class HyperparameterOptimizer:
             'eval_loss': eval_loss, 
             'best_train_loss': best_loss_train,
             'best_eval_loss': best_loss_eval, 
+            'nonzero_params': (-1 if regularization_type != "L1" else count_nonzero_params(model)),
             **{'overfitting_'+k: v for k, v in overfitting_metrics_.items() }
         })
         if self.metric == "variance_explained":
