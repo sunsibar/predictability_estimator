@@ -287,12 +287,15 @@ class HyperparameterOptimizer:
         train_loss_curve = torch.zeros(epochs)
         eval_loss_curve = torch.zeros(epochs)
         metric_curve = torch.zeros(epochs)
+        metric_curve_train = torch.zeros(epochs)
         t0 = time.time()
         try:
         # if True:
             for epoch in range(epochs):
                 model.train()
                 running_loss = 0.0
+                y_true = []
+                y_pred = []
                 for X_batch, y_batch in train_loader:
                     X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
                     optimizer.zero_grad()
@@ -306,9 +309,16 @@ class HyperparameterOptimizer:
                     loss.backward()
                     optimizer.step()
                     running_loss += loss.detach().to("cpu").item()
+                    if self.metric == 'variance_explained':
+                            y_true.append(y_batch.detach())
+                            y_pred.append(outputs.detach())
                 
                 train_loss = running_loss / len(train_loader)
                 train_loss_curve[epoch] = (train_loss)
+                if self.metric == "variance_explained":
+                    y_true = torch.cat(y_true, dim=0) 
+                    y_pred = torch.cat(y_pred, dim=0)
+                    metric_curve_train[epoch] = self._metric(y_true, y_pred)
 
                 # Evaluation
                 model.eval()
@@ -393,6 +403,7 @@ class HyperparameterOptimizer:
             'train_loss_curve': json.dumps(train_loss_curve[loss_cuve_slice].to("cpu").numpy().tolist()),
             'eval_loss_curve': json.dumps(eval_loss_curve[loss_cuve_slice].to("cpu").numpy().tolist()),
             'metric_curve': json.dumps(metric_curve[loss_cuve_slice].to("cpu").numpy().tolist()),
+            'metric_curve_train': json.dumps(metric_curve_train[loss_cuve_slice].to("cpu").numpy().tolist()),
             'epochs_loss_curves': json.dumps(loss_cuve_slice.tolist()),
             'hyperparameters': trial.params,
             'converged': patience_counter >= patience,
