@@ -39,7 +39,13 @@ def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False)
                    b) the eval loss is increasing while the train loss is decreasing
     '''
     RECENT_EPOCHS = 10
-    assert epoch >= RECENT_EPOCHS
+    if epoch < RECENT_EPOCHS:
+        print(f"Error in computing overfitting_metric: Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric")
+        # raise AssertionError(f"Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric")
+        import pdb
+        pdb.set_trace()
+        return {"overfitting_metric": -999, "train_eval_curves_diverge": None, "eval_loss_end_minus_best": None, "train_loss_end_minus_best": None,
+                 "mean_loss_diff_at_end": None, "eval_loss_increase_end": None, "train_loss_increase_end": None}
 
     result = {}
     if maximize:
@@ -230,7 +236,23 @@ class HyperparameterOptimizer:
         # default_weight_decay = ((1e-6, 1e-2) if trial.params["num_layers"] > 1 else (0.0, 0.0))
         # default_regularizers = ['L2'] if trial.params["num_layers"] == 1 else ['L1', 'L2']
         optimizer_name      = trial.suggest_categorical('optimizer', self._range("optimizer", ['Adam', 'SGD', 'RMSProp']))
-        regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L2', 'L1']))
+        try:
+            regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L2', 'L1']))
+        except ValueError as e:
+            regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L1', 'L2']))
+            
+        #     import pdb
+        #     pdb.set_trace() 
+        #     print(f"Error when trying to get regularization type: {e}")
+        #     print(f"Hyperparameter ranges: {self.hyperparameter_ranges}")
+        #     print(f"Result of self._range('regularization', ['L2', 'L1']): {self._range('regularization', ['L2', 'L1'])}")
+        #     fail = True
+        #     if 'regularization' in trial.params:
+        #         if len(trial.params['regularization']) == 1:
+        #             regularization_type = trial.params['regularization'][0]
+        #             fail = False
+        #     if fail:
+        #         raise e
         weight_decay        = trial.suggest_float('weight_decay', *self._range("weight_decay", (1e-6, 1e-2)), log=True)
         lr                  = trial.suggest_float('lr', *self._range("lr", (1e-5, 1e-1)), log=True)
 
@@ -335,11 +357,12 @@ class HyperparameterOptimizer:
                             y_true.append(y_batch)
                             y_pred.append(outputs)
                 eval_loss /= len(eval_loader)
+                eval_loss = eval_loss 
                 eval_loss_curve[epoch] = eval_loss
                 if self.metric == "variance_explained":
                     y_true = torch.cat(y_true, dim=0) 
                     y_pred = torch.cat(y_pred, dim=0)
-                    metric_curve[epoch] = self._metric(y_true, y_pred)
+                    metric_curve[epoch] = self._metric(y_true, y_pred).to("cpu").item()
 
                 if eval_loss < best_loss_eval:
                     best_loss_eval = eval_loss
@@ -416,8 +439,11 @@ class HyperparameterOptimizer:
             'nonzero_params': (-1 if regularization_type != "L1" else count_nonzero_params(model)),
             **{'overfitting_'+k: v for k, v in overfitting_metrics_.items() }
         })
+        # if return_model:
+        #     import pdb
+        #     pdb.set_trace()
         if self.metric == "variance_explained":
-            score = self._metric(y_true, y_pred)
+            score = self._metric(y_true, y_pred).to("cpu").item()
         elif self.metric == "train_loss":
             score = best_loss_train
         elif self.metric == "eval_loss":
@@ -442,15 +468,25 @@ class HyperparameterOptimizer:
         # Save results to CSV
         df = pd.DataFrame(self.results)
         if os.path.exists(self.log_file):
-            df = pd.concat([pd.read_csv(self.log_file), df], ignore_index=True
+            old_df = pd.read_csv(self.log_file)
+            df = pd.concat([old_df, df], ignore_index=True
             )
-            print("Reloaded previous study results from csv file")
+            print(f"Reloaded {len(old_df)} previous study results from csv file")
         df.to_csv(self.log_file, index=False)
 
         if verbose:
             # Print for the best trial whether it converged, whether it diverged, whether it ran out of memory, and the overfitting metrics.
             print(f"Best trial: {best_trial.number}")
-            row = df[df['trial'] == best_trial.number].iloc[0]
+            try:
+                row = df[df['trial'] == best_trial.number].iloc[0]
+            except IndexError as e:
+                print(f"Error when trying to retrieve the best trial no {best_trial.number}. Most likely, not all results could be reloaded from disk.")
+                print(f"Length of old dataframe: {len(old_df)}, length of combined dataframe: {len(df)} .")
+                print(f"Has the key been found: {np.any(df['trial'] == best_trial.number)}")
+                print(f"Where: {np.where(df['trial'] == best_trial.number)}")
+                # import pdb
+                # pdb.set_trace()
+                return best_trial 
             print(f"Converged: {row['converged']}")
             print(f"Diverged: {row['diverged']}")
             print(f"Out of memory: {row['oom']}")
