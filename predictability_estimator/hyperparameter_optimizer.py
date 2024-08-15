@@ -40,10 +40,11 @@ def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False)
     '''
     RECENT_EPOCHS = 10
     if epoch < RECENT_EPOCHS:
-        print(f"Error in computing overfitting_metric: Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric")
+        print(f"Error in computing overfitting_metric: Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric."+\
+            "This can happen if the loss diverged (nans). Todo find a nicer solution for handling that? overfitting metrics shouldnt be called. ")
         # raise AssertionError(f"Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric")
-        import pdb
-        pdb.set_trace()
+        # import pdb
+        # pdb.set_trace()
         return {"overfitting_metric": -999, "train_eval_curves_diverge": None, "eval_loss_end_minus_best": None, "train_loss_end_minus_best": None,
                  "mean_loss_diff_at_end": None, "eval_loss_increase_end": None, "train_loss_increase_end": None}
 
@@ -413,7 +414,11 @@ class HyperparameterOptimizer:
         # eval_loss_curve = eval_loss_curve[:epoch]
 
         loss_cuve_slice = np.linspace(0, epoch, 20).astype(int)
-        overfitting_metrics_ = overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize')
+        if not diverged:
+            overfitting_metrics_ = overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize')
+        else:
+            overfitting_metrics_ = {"overfitting_metric": -999, "train_eval_curves_diverge": None, "eval_loss_end_minus_best": None, "train_loss_end_minus_best": None,
+                 "mean_loss_diff_at_end": None, "eval_loss_increase_end": None, "train_loss_increase_end": None}
 
         self.results.append({
             'trial': trial.number,
