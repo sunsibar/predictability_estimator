@@ -25,6 +25,7 @@ import numpy as np
 import optuna
 from optuna.samplers import TPESampler, RandomSampler, GridSampler
 import time
+from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -32,7 +33,7 @@ from torch.utils.data import DataLoader , random_split
 import pandas as pd
 
 
-def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False):
+def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False, metric='variance_explained'):
     '''
     Checks whether a) the typical difference between train and eval loss is larger than the
                         standard deviation of the train loss in the last 10 epochs/how much larger and 
@@ -83,10 +84,16 @@ def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False)
     train_loss_increase = torch.sum((train_loss_diffs)) / std_train_loss   
     result["eval_loss_increase_end"] = eval_loss_increase
     result["train_loss_increase_end"] = train_loss_increase
-    if (train_loss_increase <= 0 ) and (eval_loss_increase > 0.1): # 0.1: Somewhat arbitrary; can reconstruct what "divergence" means from eval/train loss increase values
-        result["train_eval_curves_diverge"] = True
+    if metric == "variance_explained":
+        if (train_loss_increase <= 0 ) and (torch.sum((eval_loss_diffs))  > 0.01): # 1 point R2 increase across the last 10 epochs
+            result["train_eval_curves_diverge"] = True
+        else:
+            result["train_eval_curves_diverge"] = False
     else:
-        result["train_eval_curves_diverge"] = False 
+        if (train_loss_increase <= 0 ) and (eval_loss_increase > 0.1): # 0.1: Somewhat arbitrary; can reconstruct what "divergence" means from eval/train loss increase values
+            result["train_eval_curves_diverge"] = True
+        else:
+            result["train_eval_curves_diverge"] = False 
     return result
 
 def _model_size(trial):
@@ -98,6 +105,29 @@ def count_nonzero_params(model:torch.nn.Module):
     '''Return L0-norm of parameters'''
     return sum([torch.count_nonzero(param) for param in model.parameters()])
 
+def add_or_check_user_data(study:optuna.study.Study, study_metadata:dict, reloaded_study:bool, study_summary):
+    old_study = False
+    if reloaded_study:
+        if study_summary.datetime_start is None:
+            reloaded_study = False
+        else:
+            old_study = ( study_summary.datetime_start < datetime(2024, 8, 26, 13, 26, 1, 728147)) # date of code change of adding user data
+    if (not reloaded_study) or (old_study and len(study.user_attrs) == 0): 
+        if reloaded_study and old_study:
+            print(f"Old study; no user data found. Adding user data: {study_metadata}")
+        for key, value in study_metadata.items():
+            study.set_user_attr(key, value)
+    else:
+        for key, value in study_metadata.items():
+            if key not in study.user_attrs:
+                raise ValueError(f"Desired user key {key} not found in user_attrs of reloaded study. Keys were: {study.user_attrs.keys()}")
+            if study.user_attrs[key] != value:
+                if key == "seed":
+                    print(f"Note: Seed was not the same as in reloaded study. Original seed: {study.user_attrs[key]}, new seed: {value}")
+                else:
+                    raise ValueError(f"Desired user key {key} had value {value} but found value {study.user_attrs[key]} in reloaded study.") 
+            
+    
 
 class HyperparameterOptimizer:
     '''
@@ -127,10 +157,11 @@ class HyperparameterOptimizer:
     def __init__(self, dataset, metric, in_features, out_features, hyperparameter_ranges=None, 
                  algorithm='TPE', log_file='results.csv', log_file_optuna=None, study_name=None,
                  loss_type='MSE', patience=10, max_epochs=100, stop_when_overfitting=False,
-                 load_if_exists=False, device=None):
+                 load_if_exists=False, device=None, study_metadata={}, delete_existing=False):
         self.in_features = in_features
         self.out_features = out_features 
         self.dataset = dataset
+        self.study_metadata = study_metadata
         if metric == "R2":
             metric = "variance_explained"
         self.metric = metric 
@@ -154,6 +185,16 @@ class HyperparameterOptimizer:
         log_dir = os.path.dirname(log_file)
         os.makedirs(log_dir, exist_ok=True)
         self.log_file_optuna = log_file_optuna
+
+        if not load_if_exists and delete_existing:
+            if os.path.exists(self.log_file):
+                print(f"Removing previous log file {self.log_file}")
+                os.remove(self.log_file)
+            if os.path.exists(self.log_file_optuna):
+                print(f"Removing previous log file {self.log_file_optuna}")
+                os.remove(self.log_file_optuna)
+            # os.sleep(0.2)
+
         if log_file_optuna is not None:
             log_dir_optuna = os.path.dirname(log_file_optuna)
             os.makedirs(log_dir_optuna, exist_ok=True)
@@ -170,12 +211,25 @@ class HyperparameterOptimizer:
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
+        reloaded_study = False 
+        if load_if_exists:
+            # determine whether study already exists
+            existing_studies = list(optuna.study.get_all_study_summaries(storage=storage))
+            reloaded_study = any(study.study_name == study_name for study in existing_studies)
+            if reloaded_study:
+                study_summary = [study for study in existing_studies if study.study_name == study_name][0]
         self.study = optuna.create_study(direction='maximize' if metric == 'variance_explained' else 'minimize',
                                          sampler=sampler,
                                          storage=storage,
                                          study_name=study_name,
-                                         load_if_exists=load_if_exists) 
+                                         load_if_exists=load_if_exists, 
+                                         ) 
+        add_or_check_user_data(self.study, self.study_metadata, reloaded_study, (study_summary if reloaded_study else None))
         self.results = []
+        if reloaded_study:
+            assert os.path.exists(self.log_file), f"Log file {self.log_file} not found, but study was reloaded in Optuna."
+            self.results = pd.read_csv(self.log_file).to_dict(orient='records')
+            print(f"Reloaded {len(self.results)} previous study results from csv file") 
 
     def _range(self, key, default_range):
         '''abbreviation'''
@@ -394,7 +448,8 @@ class HyperparameterOptimizer:
                 
                 if self.stop_when_overfitting:
                     if counter_no_decrease_eval_loss >= 10:
-                        overfitting_metric_dict =  overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize')
+                        overfitting_metric_dict =  overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize',
+                                                                      metric=self.metric)
                         if overfitting_metric_dict['train_eval_curves_diverge']: 
                             break
 
@@ -415,7 +470,8 @@ class HyperparameterOptimizer:
 
         loss_cuve_slice = np.linspace(0, epoch, 20).astype(int)
         if not diverged:
-            overfitting_metrics_ = overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize')
+            overfitting_metrics_ = overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize',
+                                                      metric=self.metric)
         else:
             overfitting_metrics_ = {"overfitting_metric": -999, "train_eval_curves_diverge": None, "eval_loss_end_minus_best": None, "train_loss_end_minus_best": None,
                  "mean_loss_diff_at_end": None, "eval_loss_increase_end": None, "train_loss_increase_end": None}
@@ -458,6 +514,11 @@ class HyperparameterOptimizer:
 
         if return_model:
             return score, self.results[-1], model
+        if overfitting_metrics_['train_eval_curves_diverge'] and (overfitting_metrics_['overfitting_metric'] > 0.1):
+            if self.study.direction == 'maximize':
+                return float('-inf')
+            else:
+                return float('inf') # a bit strict, but we want to avoid overfitting / get to hyperparameters that prevent it
         return score
 
 
@@ -467,16 +528,16 @@ class HyperparameterOptimizer:
             for k, v in hyperparameters.items():
                 self.hyperparameter_ranges[k] = v
 
-        self.study.optimize(self._objective, n_trials=n_trials)
+        self.study.optimize(self._objective, n_trials=n_trials) 
         best_trial = self.study.best_trial
         
-        # Save results to CSV
+        # Save results to CSV # TODO: remove reloading, I reload during initialization
         df = pd.DataFrame(self.results)
-        if os.path.exists(self.log_file):
-            old_df = pd.read_csv(self.log_file)
-            df = pd.concat([old_df, df], ignore_index=True
-            )
-            print(f"Reloaded {len(old_df)} previous study results from csv file")
+        # if os.path.exists(self.log_file):
+        #     old_df = pd.read_csv(self.log_file)
+        #     df = pd.concat([old_df, df], ignore_index=True
+        #     )
+        #     print(f"Reloaded {len(old_df)} previous study results from csv file")
         df.to_csv(self.log_file, index=False)
 
         if verbose:
@@ -486,7 +547,7 @@ class HyperparameterOptimizer:
                 row = df[df['trial'] == best_trial.number].iloc[0]
             except IndexError as e:
                 print(f"Error when trying to retrieve the best trial no {best_trial.number}. Most likely, not all results could be reloaded from disk.")
-                print(f"Length of old dataframe: {len(old_df)}, length of combined dataframe: {len(df)} .")
+                # print(f"Length of old dataframe: {len(old_df)}, length of combined dataframe: {len(df)} .")
                 print(f"Has the key been found: {np.any(df['trial'] == best_trial.number)}")
                 print(f"Where: {np.where(df['trial'] == best_trial.number)}")
                 # import pdb
