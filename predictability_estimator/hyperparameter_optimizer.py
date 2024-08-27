@@ -218,7 +218,7 @@ class HyperparameterOptimizer:
             reloaded_study = any(study.study_name == study_name for study in existing_studies)
             if reloaded_study:
                 study_summary = [study for study in existing_studies if study.study_name == study_name][0]
-        self.study = optuna.create_study(direction='maximize' if metric == 'variance_explained' else 'minimize',
+        self.study = optuna.create_study(direction='maximize' if (metric == 'variance_explained') else 'minimize',
                                          sampler=sampler,
                                          storage=storage,
                                          study_name=study_name,
@@ -350,8 +350,8 @@ class HyperparameterOptimizer:
         
         
         epochs = self.max_epochs
-        best_loss_train = float('inf')
-        best_loss_eval = float('inf')
+        best_loss_train = float('inf') if self.study.direction == "minimize" else float('-inf')
+        best_loss_eval = float('inf') if self.study.direction == "minimize" else float('-inf')
         patience = self.patience
         patience_counter = 0
         if lr_decay:
