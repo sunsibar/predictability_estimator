@@ -40,12 +40,11 @@ def overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False,
                    b) the eval loss is increasing while the train loss is decreasing
     '''
     RECENT_EPOCHS = 10
-    if epoch < RECENT_EPOCHS:
+    if epoch < (RECENT_EPOCHS-1):
         print(f"Error in computing overfitting_metric: Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric."+\
             "This can happen if the loss diverged (nans). Todo find a nicer solution for handling that? overfitting metrics shouldnt be called. ")
         # raise AssertionError(f"Epoch was {epoch}, but must be at least {RECENT_EPOCHS} to compute overfitting metric")
-        # import pdb
-        # pdb.set_trace()
+
         return {"overfitting_metric": -999, "train_eval_curves_diverge": None, "eval_loss_end_minus_best": None, "train_loss_end_minus_best": None,
                  "mean_loss_diff_at_end": None, "eval_loss_increase_end": None, "train_loss_increase_end": None}
 
@@ -295,9 +294,7 @@ class HyperparameterOptimizer:
             regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L2', 'L1']))
         except ValueError as e:
             regularization_type = trial.suggest_categorical('regularization', self._range("regularization", ['L1', 'L2']))
-            
-        #     import pdb
-        #     pdb.set_trace() 
+
         #     print(f"Error when trying to get regularization type: {e}")
         #     print(f"Hyperparameter ranges: {self.hyperparameter_ranges}")
         #     print(f"Result of self._range('regularization', ['L2', 'L1']): {self._range('regularization', ['L2', 'L1'])}")
@@ -350,8 +347,8 @@ class HyperparameterOptimizer:
         
         
         epochs = self.max_epochs
-        best_loss_train = float('inf') if self.study.direction == "minimize" else float('-inf')
-        best_loss_eval = float('inf') if self.study.direction == "minimize" else float('-inf')
+        best_loss_train = float('inf') # the _loss_ is always minimized (so far). #if (self.study.direction == "minimize") else float('-inf')
+        best_loss_eval = float('inf') #if (self.study.direction == "minimize") else float('-inf')
         patience = self.patience
         patience_counter = 0
         if lr_decay:
@@ -447,8 +444,8 @@ class HyperparameterOptimizer:
                     # return float('inf')
                 
                 if self.stop_when_overfitting:
-                    if counter_no_decrease_eval_loss >= 10:
-                        overfitting_metric_dict =  overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize',
+                    if counter_no_decrease_eval_loss >= 10:                                         # We minimize the loss, but the study returns the metric and optuna optimizes based on that.
+                        overfitting_metric_dict =  overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False, #self.study.direction == 'maximize',
                                                                       metric=self.metric)
                         if overfitting_metric_dict['train_eval_curves_diverge']: 
                             break
@@ -470,7 +467,7 @@ class HyperparameterOptimizer:
 
         loss_cuve_slice = np.linspace(0, epoch, 20).astype(int)
         if not diverged:
-            overfitting_metrics_ = overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=self.study.direction == 'maximize',
+            overfitting_metrics_ = overfitting_metric(train_loss_curve, eval_loss_curve, epoch, maximize=False, #self.study.direction == 'maximize', # study direction is for the metric; here we optimize MSE (ie minimize).
                                                       metric=self.metric)
         else:
             overfitting_metrics_ = {"overfitting_metric": -999, "train_eval_curves_diverge": None, "eval_loss_end_minus_best": None, "train_loss_end_minus_best": None,
@@ -511,16 +508,35 @@ class HyperparameterOptimizer:
             score = best_loss_eval
         else:
             raise ValueError("Invalid metric", self.metric)
-
+        # import pdb
+        # pdb.set_trace()
         if return_model:
             return score, self.results[-1], model
         if overfitting_metrics_['train_eval_curves_diverge'] and (overfitting_metrics_['overfitting_metric'] > 0.1):
-            if self.study.direction == 'maximize':
+            if self.study.direction == optuna.study.StudyDirection.MAXIMIZE:
                 return float('-inf')
             else:
+                assert self.study.direction == optuna.study.StudyDirection.MINIMIZE, f"study direction value: {self.study.direction}"
+                import pdb
+                pdb.set_trace()
                 return float('inf') # a bit strict, but we want to avoid overfitting / get to hyperparameters that prevent it
         return score
 
+    @staticmethod
+    def _debug_callback(study:optuna.study.Study, trial:optuna.trial.FrozenTrial):
+        ''' Should never be posinf as long as we optimize variance_explained.'''
+        try:
+            if np.isposinf(trial.value):
+                print(f"Trial {trial.number} was stopped because of overfitting.")
+                import pdb
+                pdb.set_trace()
+        except TypeError as e:
+            print(e)
+            print("Trial value: ", trial.value)
+            print("With type: ")
+            print(type(trial.value))
+            import pdb
+            pdb.set_trace()
 
     def optimize(self, n_trials=100, verbose=True, hyperparameters=None):
         if hyperparameters:
@@ -528,7 +544,7 @@ class HyperparameterOptimizer:
             for k, v in hyperparameters.items():
                 self.hyperparameter_ranges[k] = v
 
-        self.study.optimize(self._objective, n_trials=n_trials) 
+        self.study.optimize(self._objective, n_trials=n_trials, callbacks=[self._debug_callback])
         best_trial = self.study.best_trial
         
         # Save results to CSV # TODO: remove reloading, I reload during initialization
@@ -550,8 +566,6 @@ class HyperparameterOptimizer:
                 # print(f"Length of old dataframe: {len(old_df)}, length of combined dataframe: {len(df)} .")
                 print(f"Has the key been found: {np.any(df['trial'] == best_trial.number)}")
                 print(f"Where: {np.where(df['trial'] == best_trial.number)}")
-                # import pdb
-                # pdb.set_trace()
                 return best_trial 
             print(f"Converged: {row['converged']}")
             print(f"Diverged: {row['diverged']}")
