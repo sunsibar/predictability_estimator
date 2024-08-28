@@ -536,7 +536,7 @@ class HyperparameterOptimizer:
             print("With type: ")
             print(type(trial.value))
             import pdb
-            pdb.set_trace()
+            pdb.set_trace() 
 
     def optimize(self, n_trials=100, verbose=True, hyperparameters=None):
         if hyperparameters:
