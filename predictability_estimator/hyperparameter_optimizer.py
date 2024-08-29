@@ -525,6 +525,8 @@ class HyperparameterOptimizer:
     @staticmethod
     def _debug_callback(study:optuna.study.Study, trial:optuna.trial.FrozenTrial):
         ''' Should never be posinf as long as we optimize variance_explained.'''
+        if trial.value is None:
+            print(f"Trial {trial.number} has value None. What happened?")
         try:
             if np.isposinf(trial.value):
                 print(f"Trial {trial.number} was stopped because of overfitting.")
